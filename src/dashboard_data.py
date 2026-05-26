@@ -9,7 +9,12 @@ from src.config import OUTPUT_DIR, PROCESSED_DIR, SYNTHETIC_NETWORK_DIR
 
 
 def _safe_read(path: Path, **kwargs) -> pd.DataFrame:
-    return pd.read_csv(path, **kwargs) if path.exists() else pd.DataFrame()
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, **kwargs)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
 
 
 def load_dashboard_datasets() -> Dict[str, pd.DataFrame]:
@@ -69,4 +74,3 @@ def executive_metrics(datasets: Dict[str, pd.DataFrame]) -> Dict[str, float]:
         "cost_saving_vs_baseline": saving,
         "top_constrained_plant": top_constrained,
     }
-

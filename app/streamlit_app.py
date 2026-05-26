@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.dashboard_data import executive_metrics, load_dashboard_datasets
 
@@ -131,4 +138,3 @@ if page == "Scenario Analysis":
         st.dataframe(scenario, use_container_width=True)
         st.plotly_chart(px.bar(scenario, x="scenario", y="total_cost", color="scenario"), use_container_width=True)
         st.plotly_chart(px.bar(scenario, x="scenario", y="simulation_avg_service_level", color="scenario"), use_container_width=True)
-
