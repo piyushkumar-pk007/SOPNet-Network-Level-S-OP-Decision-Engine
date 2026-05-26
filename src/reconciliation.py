@@ -58,7 +58,18 @@ def middle_out_reconciliation(forecast_df: pd.DataFrame, weekly_df: pd.DataFrame
     return reconciled
 
 
-def simplified_mint(forecast_df: pd.DataFrame, weekly_df: pd.DataFrame) -> pd.DataFrame:
+def simplified_mint(
+    forecast_df: pd.DataFrame,
+    weekly_df: pd.DataFrame,
+    bu_weight: float = 0.7,
+    td_weight: float = 0.3,
+) -> pd.DataFrame:
+    required = {"store_id", "cat_id", "week_id", "date", "forecast"}
+    missing = required - set(forecast_df.columns)
+    if missing:
+        LOGGER.warning("simplified_mint: forecast_df missing columns %s — returning empty", missing)
+        return pd.DataFrame()
+
     bottom_up_df = bottom_up_reconciliation(forecast_df)
     top_down_df = top_down_reconciliation(forecast_df, weekly_df)
     category_bottom_up = bottom_up_df[bottom_up_df["series_level"] == "store_category_reconciled"][
@@ -66,7 +77,16 @@ def simplified_mint(forecast_df: pd.DataFrame, weekly_df: pd.DataFrame) -> pd.Da
     ].rename(columns={"forecast": "bu_forecast"})
     category_top_down = top_down_df[["store_id", "cat_id", "week_id", "date", "forecast"]].rename(columns={"forecast": "td_forecast"})
     combined = category_bottom_up.merge(category_top_down, on=["store_id", "cat_id", "week_id", "date"], how="inner")
-    combined["forecast"] = 0.7 * combined["bu_forecast"] + 0.3 * combined["td_forecast"]
+
+    if combined.empty:
+        LOGGER.warning("simplified_mint: no rows after joining bottom-up and top-down forecasts — returning empty")
+        return pd.DataFrame()
+
+    combined["forecast"] = bu_weight * combined["bu_forecast"] + td_weight * combined["td_forecast"]
+    negative_count = (combined["forecast"] < 0).sum()
+    if negative_count > 0:
+        LOGGER.warning("simplified_mint: %d reconciled forecast values are negative", negative_count)
+
     combined["series_id"] = combined["store_id"] + "|" + combined["cat_id"]
     combined["series_level"] = "store_category"
     combined["method"] = "simplified_mint"

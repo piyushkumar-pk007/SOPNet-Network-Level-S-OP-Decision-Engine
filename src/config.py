@@ -34,7 +34,6 @@ class OptimizationConfig:
     service_levels: dict[str, float] = field(
         default_factory=lambda: {"A": 0.95, "B": 0.90, "C": 0.85}
     )
-    premium_service_level_a: float = 0.98
 
 
 @dataclass
@@ -45,6 +44,7 @@ class SimulationConfig:
     lead_time_delay_probability: float = 0.15
     lead_time_delay_pct: float = 0.30
     supply_disruption_probability: float = 0.05
+    random_seed: int = 42
 
 
 @dataclass

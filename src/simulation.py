@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import simpy
 
-from src.config import OUTPUT_DIR, SIMULATION_CONFIG
+from src.config import OPTIMIZATION_CONFIG, OUTPUT_DIR, SIMULATION_CONFIG
 from src.utils import get_logger, write_dataframe
 
 
@@ -86,7 +86,7 @@ def _single_replication(base_df: pd.DataFrame, replication_id: int) -> dict[str,
                 "replication_id": replication_id,
                 "avg_service_level": float(np.mean(service_levels)) if service_levels else 1.0,
                 "stockout_units": float(np.sum(stockouts)),
-                "expected_stockout_cost": float(np.sum(stockouts) * 12.0),
+                "expected_stockout_cost": float(np.sum(stockouts) * OPTIMIZATION_CONFIG.stockout_penalty_per_unit),
                 "avg_ending_inventory": float(np.mean(ending_inventory)) if ending_inventory else 0.0,
             }
         )
@@ -101,6 +101,7 @@ def run_simulation(base_df: pd.DataFrame, replications: int = SIMULATION_CONFIG.
 
 
 def main() -> None:
+    np.random.seed(SIMULATION_CONFIG.random_seed)
     demand, shipments, _ = load_inputs()
     base = _prepare_simulation_base(demand, shipments)
     sim_results = run_simulation(base, SIMULATION_CONFIG.replications)

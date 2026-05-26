@@ -188,10 +188,11 @@ def _model_registry() -> dict[str, Callable]:
     }
 
 
-def _cross_validate_models(series: pd.DataFrame, horizon: int) -> pd.DataFrame:
+def _cross_validate_models(series: pd.DataFrame, horizon: int) -> tuple[pd.DataFrame, dict[str, float]]:
     models = _model_registry()
     splitter = TimeSeriesSplit(n_splits=min(3, max(2, len(series) // horizon - 1)))
     rows = []
+    model_residuals: dict[str, list[float]] = {}
     series_id = series["series_id"].iloc[0]
     series_level = series["series_level"].iloc[0]
     state_id = series["state_id"].iloc[0]
@@ -203,6 +204,8 @@ def _cross_validate_models(series: pd.DataFrame, horizon: int) -> pd.DataFrame:
         for model_name, model_fn in models.items():
             try:
                 preds = np.asarray(model_fn(train, test), dtype=float)
+                y_true = test["weekly_demand"].to_numpy(dtype=float)
+                model_residuals.setdefault(model_name, []).extend((y_true - preds).tolist())
                 rows.append(
                     {
                         "series_id": series_id,
@@ -212,13 +215,14 @@ def _cross_validate_models(series: pd.DataFrame, horizon: int) -> pd.DataFrame:
                         "target": "weekly_demand",
                         "model_name": model_name,
                         "fold": fold,
-                        **calculate_metrics(test["weekly_demand"].to_numpy(dtype=float), preds),
+                        **calculate_metrics(y_true, preds),
                     }
                 )
             except Exception as exc:
                 LOGGER.warning("Model %s failed for %s: %s", model_name, series_id, exc)
 
-    return pd.DataFrame(rows)
+    residual_stds = {name: float(np.std(res)) if res else 0.0 for name, res in model_residuals.items()}
+    return pd.DataFrame(rows), residual_stds
 
 
 def _summarize_results(cv_results: pd.DataFrame) -> pd.DataFrame:
@@ -235,7 +239,13 @@ def _best_model(summary: pd.DataFrame) -> pd.Series:
     return summary.sort_values(["wape", "rmse"]).iloc[0]
 
 
-def _forecast_rows(series: pd.DataFrame, test: pd.DataFrame, preds: np.ndarray, model_name: str) -> list[dict[str, object]]:
+def _forecast_rows(
+    series: pd.DataFrame,
+    test: pd.DataFrame,
+    preds: np.ndarray,
+    model_name: str,
+    r_std: float = 0.0,
+) -> list[dict[str, object]]:
     rows = []
     for pred, (_, actual_row) in zip(preds, test.iterrows()):
         rows.append(
@@ -249,19 +259,27 @@ def _forecast_rows(series: pd.DataFrame, test: pd.DataFrame, preds: np.ndarray, 
                 "week_id": actual_row["week_id"],
                 "actual": actual_row["weekly_demand"],
                 "forecast": float(pred),
+                "forecast_lower_90": float(max(pred - 1.645 * r_std, 0)),
+                "forecast_upper_90": float(pred + 1.645 * r_std),
                 "model_name": model_name,
             }
         )
     return rows
 
 
-def _best_model_forecast(series: pd.DataFrame, summary: pd.DataFrame, horizon: int) -> pd.DataFrame:
+def _best_model_forecast(
+    series: pd.DataFrame,
+    summary: pd.DataFrame,
+    horizon: int,
+    residual_stds: dict[str, float] | None = None,
+) -> pd.DataFrame:
     models = _model_registry()
     train = series.iloc[:-horizon].copy()
     test = series.iloc[-horizon:].copy()
     best = _best_model(summary)
     preds = models[best["model_name"]](train, test)
-    return pd.DataFrame(_forecast_rows(series, test, preds, best["model_name"]))
+    r_std = (residual_stds or {}).get(best["model_name"], 0.0)
+    return pd.DataFrame(_forecast_rows(series, test, preds, best["model_name"], r_std=r_std))
 
 
 def evaluate_series(series_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -270,32 +288,35 @@ def evaluate_series(series_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame
         return pd.DataFrame(), pd.DataFrame()
 
     horizon = min(SAMPLING_CONFIG.forecast_horizon_weeks, max(2, len(series) // 5))
-    cv_results = _cross_validate_models(series, horizon)
+    cv_results, residual_stds = _cross_validate_models(series, horizon)
     if cv_results.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     summary = _summarize_results(cv_results)
-    return summary, _best_model_forecast(series, summary, horizon)
+    return summary, _best_model_forecast(series, summary, horizon, residual_stds=residual_stds)
 
 
 def plot_selected_series(forecasts: pd.DataFrame) -> None:
     if forecasts.empty:
         return
 
+    has_pi = "forecast_lower_90" in forecasts.columns and "forecast_upper_90" in forecasts.columns
     series_ids = forecasts["series_id"].drop_duplicates().head(4).tolist()
     plot_df = forecasts[forecasts["series_id"].isin(series_ids)].copy()
-    plt.figure(figsize=(12, 7))
+    fig, ax = plt.subplots(figsize=(12, 7))
     for series_id in series_ids:
-        series = plot_df[plot_df["series_id"] == series_id]
-        plt.plot(series["date"], series["actual"], linestyle="-", marker="o", label=f"{series_id} actual")
-        plt.plot(series["date"], series["forecast"], linestyle="--", marker="o", label=f"{series_id} forecast")
-    plt.title("Forecast Plot for Selected Series")
-    plt.xlabel("Date")
-    plt.ylabel("Weekly Demand")
-    plt.legend(fontsize=8)
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "forecast_plot_selected_skus.png", dpi=160)
-    plt.close()
+        s = plot_df[plot_df["series_id"] == series_id]
+        ax.plot(s["date"], s["actual"], linestyle="-", marker="o", label=f"{series_id} actual")
+        line, = ax.plot(s["date"], s["forecast"], linestyle="--", marker="o", label=f"{series_id} forecast")
+        if has_pi:
+            ax.fill_between(s["date"], s["forecast_lower_90"], s["forecast_upper_90"], alpha=0.15, color=line.get_color())
+    ax.set_title("Forecast Plot for Selected Series")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Weekly Demand")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(OUTPUT_DIR / "forecast_plot_selected_skus.png", dpi=160)
+    plt.close(fig)
 
 
 def main() -> None:
