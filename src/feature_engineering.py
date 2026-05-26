@@ -18,23 +18,22 @@ def load_weekly_demand(path: Path | None = None) -> pd.DataFrame:
 
 def create_modeling_features(weekly_df: pd.DataFrame) -> pd.DataFrame:
     df = weekly_df.copy().sort_values(["store_id", "item_id", "week_id"]).reset_index(drop=True)
-    group_cols = ["store_id", "item_id"]
+    demand_by_series = df.groupby(["store_id", "item_id"])["weekly_demand"]
     for lag in [1, 2, 4, 8]:
-        df[f"lag_{lag}"] = df.groupby(group_cols)["weekly_demand"].shift(lag)
-    df["rolling_mean_4"] = df.groupby(group_cols)["weekly_demand"].shift(1).rolling(4, min_periods=1).mean()
-    df["rolling_mean_8"] = df.groupby(group_cols)["weekly_demand"].shift(1).rolling(8, min_periods=1).mean()
-    df["rolling_std_4"] = df.groupby(group_cols)["weekly_demand"].shift(1).rolling(4, min_periods=1).std()
-    df["rolling_std_4"] = df["rolling_std_4"].fillna(0)
+        df[f"lag_{lag}"] = demand_by_series.shift(lag)
+    lagged = demand_by_series.shift(1)
+    df["rolling_mean_4"] = lagged.rolling(4, min_periods=1).mean()
+    df["rolling_mean_8"] = lagged.rolling(8, min_periods=1).mean()
+    df["rolling_std_4"] = lagged.rolling(4, min_periods=1).std().fillna(0)
     return df
 
 
 def main() -> None:
-    weekly_df = load_weekly_demand()
-    feature_df = create_modeling_features(weekly_df)
-    write_dataframe(feature_df, PROCESSED_DIR / "weekly_demand_features.csv")
+    weekly = load_weekly_demand()
+    features = create_modeling_features(weekly)
+    write_dataframe(features, PROCESSED_DIR / "weekly_demand_features.csv")
     LOGGER.info("Saved modeling feature table to %s", PROCESSED_DIR / "weekly_demand_features.csv")
 
 
 if __name__ == "__main__":
     main()
-

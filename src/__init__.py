@@ -1,2 +1,0 @@
-"""SOPNet package."""
-

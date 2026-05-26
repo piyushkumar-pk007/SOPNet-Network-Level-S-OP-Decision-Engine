@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -16,7 +15,7 @@ ASSETS_DIR = ROOT_DIR / "assets"
 
 @dataclass
 class SamplingConfig:
-    selected_stores: List[str] = field(default_factory=lambda: ["CA_1", "TX_1", "WI_1"])
+    selected_stores: list[str] = field(default_factory=lambda: ["CA_1", "TX_1", "WI_1"])
     top_departments: int = 5
     max_skus: int = 120
     last_n_days: int = 728
@@ -32,7 +31,7 @@ class OptimizationConfig:
     stockout_penalty_per_unit: float = 12.0
     default_min_run_units: float = 100.0
     initial_inventory_cover_weeks: float = 0.4
-    service_levels: Dict[str, float] = field(
+    service_levels: dict[str, float] = field(
         default_factory=lambda: {"A": 0.95, "B": 0.90, "C": 0.85}
     )
     premium_service_level_a: float = 0.98
@@ -60,4 +59,3 @@ SAMPLING_CONFIG = SamplingConfig()
 OPTIMIZATION_CONFIG = OptimizationConfig()
 SIMULATION_CONFIG = SimulationConfig()
 SCENARIO_CONFIG = ScenarioConfig()
-

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -39,25 +38,25 @@ def _prepare_simulation_base(demand_df: pd.DataFrame, shipment_df: pd.DataFrame)
     if demand.empty:
         demand = demand_df[demand_df["series_level"].str.contains("store_category", na=False)].copy()
     demand["retail_node_id"] = demand["store_id"] + "__" + demand["cat_id"]
-    planned = (
+    planned_supply = (
         shipment_df[shipment_df["lane_type"] == "dc_to_retail"]
         .groupby(["destination_id", "category", "week_id"], as_index=False)["shipment_qty"]
         .sum()
         .rename(columns={"destination_id": "retail_node_id", "category": "cat_id", "shipment_qty": "planned_supply"})
     )
-    base = demand.merge(planned, on=["retail_node_id", "cat_id", "week_id"], how="left")
+    base = demand.merge(planned_supply, on=["retail_node_id", "cat_id", "week_id"], how="left")
     base["planned_supply"] = base["planned_supply"].fillna(0)
     return base
 
 
-def _single_replication(base_df: pd.DataFrame, replication_id: int) -> Dict[str, float]:
+def _single_replication(base_df: pd.DataFrame, replication_id: int) -> dict[str, float]:
     env = simpy.Environment()
-    metrics: Dict[str, float] = {}
+    metrics: dict[str, float] = {}
 
-    def weekly_process(environment: simpy.Environment) -> None:
-        service_levels: List[float] = []
-        stockout_units: List[float] = []
-        ending_inventory: List[float] = []
+    def run_weeks(env: simpy.Environment) -> None:
+        service_levels: list[float] = []
+        stockouts: list[float] = []
+        ending_inventory: list[float] = []
         for week_id in sorted(base_df["week_id"].unique()):
             week_df = base_df[base_df["week_id"] == week_id]
             for row in week_df.itertuples():
@@ -78,21 +77,21 @@ def _single_replication(base_df: pd.DataFrame, replication_id: int) -> Dict[str,
                 stockout = max(demand - realized_supply, 0.0)
                 ending_inv = max(realized_supply - demand, 0.0)
                 service_levels.append(service)
-                stockout_units.append(stockout)
+                stockouts.append(stockout)
                 ending_inventory.append(ending_inv)
-            yield environment.timeout(1)
+            yield env.timeout(1)
 
         metrics.update(
             {
                 "replication_id": replication_id,
                 "avg_service_level": float(np.mean(service_levels)) if service_levels else 1.0,
-                "stockout_units": float(np.sum(stockout_units)),
-                "expected_stockout_cost": float(np.sum(stockout_units) * 12.0),
+                "stockout_units": float(np.sum(stockouts)),
+                "expected_stockout_cost": float(np.sum(stockouts) * 12.0),
                 "avg_ending_inventory": float(np.mean(ending_inventory)) if ending_inventory else 0.0,
             }
         )
 
-    env.process(weekly_process(env))
+    env.process(run_weeks(env))
     env.run()
     return metrics
 
@@ -102,9 +101,9 @@ def run_simulation(base_df: pd.DataFrame, replications: int = SIMULATION_CONFIG.
 
 
 def main() -> None:
-    demand_df, shipment_df, _ = load_inputs()
-    base_df = _prepare_simulation_base(demand_df, shipment_df)
-    sim_results = run_simulation(base_df, SIMULATION_CONFIG.replications)
+    demand, shipments, _ = load_inputs()
+    base = _prepare_simulation_base(demand, shipments)
+    sim_results = run_simulation(base, SIMULATION_CONFIG.replications)
 
     summary = pd.DataFrame(
         [

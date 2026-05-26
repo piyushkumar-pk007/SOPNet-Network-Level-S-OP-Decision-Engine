@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
 
 import pandas as pd
 
@@ -17,7 +16,7 @@ def _safe_read(path: Path, **kwargs) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def load_dashboard_datasets() -> Dict[str, pd.DataFrame]:
+def load_dashboard_datasets() -> dict[str, pd.DataFrame]:
     return {
         "weekly_demand": _safe_read(PROCESSED_DIR / "weekly_demand.csv", parse_dates=["date"]),
         "forecast_results": _safe_read(OUTPUT_DIR / "forecast_results.csv", parse_dates=["date"]),
@@ -37,7 +36,7 @@ def load_dashboard_datasets() -> Dict[str, pd.DataFrame]:
     }
 
 
-def executive_metrics(datasets: Dict[str, pd.DataFrame]) -> Dict[str, float]:
+def executive_metrics(datasets: dict[str, pd.DataFrame]) -> dict[str, float]:
     forecast = datasets["forecast_results"]
     summary = datasets["optimization_summary"]
     baseline = datasets["baseline_comparison"]
@@ -57,12 +56,12 @@ def executive_metrics(datasets: Dict[str, pd.DataFrame]) -> Dict[str, float]:
         saving = 0.0
 
     if not production.empty and not plants.empty:
-        util = (
+        plant_utilization = (
             production.groupby("plant_id", as_index=False)["produce_qty"].sum()
             .merge(plants[["plant_id", "weekly_capacity_units"]], on="plant_id", how="left")
         )
-        util["utilization"] = util["produce_qty"] / util["weekly_capacity_units"]
-        top_constrained = util.sort_values("utilization", ascending=False)["plant_id"].iloc[0]
+        plant_utilization["utilization"] = plant_utilization["produce_qty"] / plant_utilization["weekly_capacity_units"]
+        top_constrained = plant_utilization.sort_values("utilization", ascending=False)["plant_id"].iloc[0]
     else:
         top_constrained = ""
 

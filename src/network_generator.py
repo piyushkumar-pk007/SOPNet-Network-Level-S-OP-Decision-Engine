@@ -83,16 +83,16 @@ def build_distribution_centers() -> pd.DataFrame:
 
 
 def build_retail_nodes(weekly_df: pd.DataFrame) -> pd.DataFrame:
-    retail = (
+    nodes = (
         weekly_df[["store_id", "state_id", "cat_id"]]
         .drop_duplicates()
         .rename(columns={"cat_id": "category"})
         .copy()
     )
     state_region_map = {"CA": "West", "TX": "South", "WI": "North"}
-    retail["retail_node_id"] = retail["store_id"] + "__" + retail["category"]
-    retail["assigned_region"] = retail["state_id"].str[:2].map(state_region_map).fillna("Central")
-    return retail[["retail_node_id", "store_id", "state_id", "category", "assigned_region"]]
+    nodes["retail_node_id"] = nodes["store_id"] + "__" + nodes["category"]
+    nodes["assigned_region"] = nodes["state_id"].str[:2].map(state_region_map).fillna("Central")
+    return nodes[["retail_node_id", "store_id", "state_id", "category", "assigned_region"]]
 
 
 def build_lanes(plants: pd.DataFrame, dcs: pd.DataFrame, retail_nodes: pd.DataFrame) -> pd.DataFrame:
@@ -143,12 +143,12 @@ def build_lanes(plants: pd.DataFrame, dcs: pd.DataFrame, retail_nodes: pd.DataFr
 
 
 def main() -> None:
-    weekly_df = load_weekly_demand()
-    sku_master = build_sku_master(weekly_df)
+    weekly = load_weekly_demand()
+    sku_master = build_sku_master(weekly)
     categories = sorted(sku_master["category"].unique().tolist())
     plants = build_plants(categories)
     dcs = build_distribution_centers()
-    retail_nodes = build_retail_nodes(weekly_df)
+    retail_nodes = build_retail_nodes(weekly)
     lanes = build_lanes(plants, dcs, retail_nodes)
 
     write_dataframe(plants, SYNTHETIC_NETWORK_DIR / "plants.csv")
@@ -161,4 +161,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

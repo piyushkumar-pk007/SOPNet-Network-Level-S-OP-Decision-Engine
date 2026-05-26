@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, Tuple
-
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from src.config import OUTPUT_DIR, SCENARIO_CONFIG, SYNTHETIC_NETWORK_DIR
+from src.config import OUTPUT_DIR, SCENARIO_CONFIG
 from src.optimization import load_inputs as load_opt_inputs
 from src.optimization import optimize_network_plan, prepare_demand_inputs
 from src.simulation import run_simulation
@@ -54,29 +51,32 @@ def run_scenarios() -> pd.DataFrame:
     ]
     rows = []
     for scenario_name in scenarios:
-        demand_adj, plants_adj, lanes_adj = _apply_scenario(scenario_name, base_demand, plants, lanes)
-        optimized = optimize_network_plan(demand_adj, plants_adj, dcs, lanes_adj)
-        sim_base = demand_adj.copy()
-        sim_base["forecast"] = sim_base["required_demand"]
-        sim_base = sim_base.merge(
-            optimized["shipments"][optimized["shipments"]["lane_type"] == "dc_to_retail"].groupby(["destination_id", "category", "week_id"], as_index=False)["shipment_qty"].sum().rename(columns={"destination_id": "retail_node_id", "category": "cat_id", "shipment_qty": "planned_supply"}),
-            on=["retail_node_id", "cat_id", "week_id"],
-            how="left",
+        demand, plants_for_run, lanes_for_run = _apply_scenario(scenario_name, base_demand, plants, lanes)
+        optimized = optimize_network_plan(demand, plants_for_run, dcs, lanes_for_run)
+        sim_df = demand.copy()
+        sim_df["forecast"] = sim_df["required_demand"]
+        planned_supply = (
+            optimized["shipments"][optimized["shipments"]["lane_type"] == "dc_to_retail"]
+            .groupby(["destination_id", "category", "week_id"], as_index=False)["shipment_qty"]
+            .sum()
+            .rename(columns={"destination_id": "retail_node_id", "category": "cat_id", "shipment_qty": "planned_supply"})
         )
-        sim_base["planned_supply"] = sim_base["planned_supply"].fillna(0)
-        sim_results = run_simulation(sim_base)
-        sim_summary = {
-            "scenario": scenario_name,
-            "total_cost": optimized["summary"]["total_cost"].iloc[0],
-            "service_level": optimized["summary"]["service_level"].iloc[0],
-            "stockout_units": optimized["summary"]["stockout_units"].iloc[0],
-            "simulation_avg_service_level": sim_results["avg_service_level"].mean(),
-            "simulation_avg_stockout_cost": sim_results["expected_stockout_cost"].mean(),
-            "production_cost": optimized["summary"]["production_cost"].iloc[0],
-            "transport_cost": optimized["summary"]["transport_cost"].iloc[0],
-            "holding_cost": optimized["summary"]["holding_cost"].iloc[0],
-        }
-        rows.append(sim_summary)
+        sim_df = sim_df.merge(planned_supply, on=["retail_node_id", "cat_id", "week_id"], how="left")
+        sim_df["planned_supply"] = sim_df["planned_supply"].fillna(0)
+        sim_results = run_simulation(sim_df)
+        rows.append(
+            {
+                "scenario": scenario_name,
+                "total_cost": optimized["summary"]["total_cost"].iloc[0],
+                "service_level": optimized["summary"]["service_level"].iloc[0],
+                "stockout_units": optimized["summary"]["stockout_units"].iloc[0],
+                "simulation_avg_service_level": sim_results["avg_service_level"].mean(),
+                "simulation_avg_stockout_cost": sim_results["expected_stockout_cost"].mean(),
+                "production_cost": optimized["summary"]["production_cost"].iloc[0],
+                "transport_cost": optimized["summary"]["transport_cost"].iloc[0],
+                "holding_cost": optimized["summary"]["holding_cost"].iloc[0],
+            }
+        )
     return pd.DataFrame(rows)
 
 

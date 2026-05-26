@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -23,9 +23,7 @@ def get_logger(name: str) -> logging.Logger:
         return logger
 
     logger.setLevel(logging.INFO)
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-    )
+    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
@@ -50,11 +48,11 @@ def write_dataframe(df: pd.DataFrame, path: Path, index: bool = False) -> None:
 
 
 def weighted_average(values: Iterable[float], weights: Iterable[float]) -> float:
-    values_arr = np.asarray(list(values), dtype=float)
-    weights_arr = np.asarray(list(weights), dtype=float)
-    if len(values_arr) == 0 or np.nansum(weights_arr) == 0:
+    vals = np.asarray(list(values), dtype=float)
+    wts = np.asarray(list(weights), dtype=float)
+    if vals.size == 0 or np.nansum(wts) == 0:
         return float(np.nan)
-    return float(np.average(values_arr, weights=weights_arr))
+    return float(np.average(vals, weights=wts))
 
 
 def wape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -74,6 +72,5 @@ def optional_import(module_name: str):
         return None
 
 
-def latest_week_ids(df: pd.DataFrame, week_column: str, n: int) -> list:
-    return sorted(df[week_column].dropna().unique())[-n:]
-
+def latest_week_ids(df: pd.DataFrame, week_col: str, n: int) -> list:
+    return sorted(df[week_col].dropna().unique())[-n:]

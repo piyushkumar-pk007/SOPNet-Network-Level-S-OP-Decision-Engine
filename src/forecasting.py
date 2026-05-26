@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +12,6 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import TimeSeriesSplit
 
 from src.config import OUTPUT_DIR, PROCESSED_DIR, SAMPLING_CONFIG
-from src.feature_engineering import create_modeling_features
 from src.utils import get_logger, mape, wape, write_dataframe
 
 
@@ -48,24 +47,22 @@ def load_weekly_demand(path: Path | None = None) -> pd.DataFrame:
 
 def build_forecast_base(weekly_df: pd.DataFrame) -> pd.DataFrame:
     if SAMPLING_CONFIG.optimization_aggregation_level == "category_store_week":
-        forecast_base = (
-            weekly_df.groupby(
-                ["state_id", "store_id", "cat_id", "week_id", "date", "month", "quarter", "year", "week_of_year"],
-                as_index=False,
-            )
-            .agg(
-                weekly_demand=("weekly_demand", "sum"),
-                avg_sell_price=("avg_sell_price", "mean"),
-                is_event_week=("is_event_week", "max"),
-            )
+        base = weekly_df.groupby(
+            ["state_id", "store_id", "cat_id", "week_id", "date", "month", "quarter", "year", "week_of_year"],
+            as_index=False,
+        ).agg(
+            weekly_demand=("weekly_demand", "sum"),
+            avg_sell_price=("avg_sell_price", "mean"),
+            is_event_week=("is_event_week", "max"),
         )
-        forecast_base["series_id"] = forecast_base["store_id"] + "|" + forecast_base["cat_id"]
-        forecast_base["series_level"] = "store_category"
-    else:
-        forecast_base = weekly_df.copy()
-        forecast_base["series_id"] = forecast_base["store_id"] + "|" + forecast_base["item_id"]
-        forecast_base["series_level"] = "store_item"
-    return forecast_base
+        base["series_id"] = base["store_id"] + "|" + base["cat_id"]
+        base["series_level"] = "store_category"
+        return base
+
+    base = weekly_df.copy()
+    base["series_id"] = base["store_id"] + "|" + base["item_id"]
+    base["series_level"] = "store_item"
+    return base
 
 
 def seasonal_naive(train: pd.Series, horizon: int, seasonal_period: int = 4) -> np.ndarray:
@@ -117,15 +114,8 @@ def create_supervised_frame(series_df: pd.DataFrame) -> pd.DataFrame:
     return df.dropna().reset_index(drop=True)
 
 
-def ml_forecast(train_df: pd.DataFrame, test_df: pd.DataFrame) -> np.ndarray:
-    combined = pd.concat([train_df, test_df], ignore_index=True)
-    supervised = create_supervised_frame(combined)
-    train_supervised = create_supervised_frame(train_df)
-    split_point = len(train_supervised)
-    if split_point == 0 or supervised.empty:
-        return moving_average(train_df["weekly_demand"], len(test_df))
-
-    feature_cols = [
+def _feature_columns(df: pd.DataFrame) -> list[str]:
+    candidates = [
         "lag_1",
         "lag_2",
         "lag_4",
@@ -139,14 +129,12 @@ def ml_forecast(train_df: pd.DataFrame, test_df: pd.DataFrame) -> np.ndarray:
         "is_event_week",
         "avg_sell_price",
     ]
-    available = [column for column in feature_cols if column in supervised.columns]
-    train_part = supervised.iloc[:split_point].copy()
-    test_part = supervised.iloc[split_point:].copy()
-    if test_part.empty or train_part.empty:
-        return moving_average(train_df["weekly_demand"], len(test_df))
+    return [col for col in candidates if col in df.columns]
 
+
+def _build_ml_model():
     if XGBRegressor is not None:
-        model = XGBRegressor(
+        return XGBRegressor(
             n_estimators=250,
             max_depth=4,
             learning_rate=0.05,
@@ -154,19 +142,34 @@ def ml_forecast(train_df: pd.DataFrame, test_df: pd.DataFrame) -> np.ndarray:
             colsample_bytree=0.9,
             random_state=42,
         )
-    elif LGBMRegressor is not None:
-        model = LGBMRegressor(n_estimators=250, learning_rate=0.05, random_state=42)
-    else:
-        model = RandomForestRegressor(n_estimators=250, random_state=42)
+    if LGBMRegressor is not None:
+        return LGBMRegressor(n_estimators=250, learning_rate=0.05, random_state=42)
+    return RandomForestRegressor(n_estimators=250, random_state=42)
 
-    model.fit(train_part[available], train_part["weekly_demand"])
-    preds = model.predict(test_part[available])
+
+def ml_forecast(train_df: pd.DataFrame, test_df: pd.DataFrame) -> np.ndarray:
+    combined = pd.concat([train_df, test_df], ignore_index=True)
+    supervised = create_supervised_frame(combined)
+    train_supervised = create_supervised_frame(train_df)
+    split_point = len(train_supervised)
+    if split_point == 0 or supervised.empty:
+        return moving_average(train_df["weekly_demand"], len(test_df))
+
+    features = _feature_columns(supervised)
+    train_part = supervised.iloc[:split_point].copy()
+    test_part = supervised.iloc[split_point:].copy()
+    if test_part.empty or train_part.empty:
+        return moving_average(train_df["weekly_demand"], len(test_df))
+
+    model = _build_ml_model()
+    model.fit(train_part[features], train_part["weekly_demand"])
+    preds = model.predict(test_part[features])
     if len(preds) < len(test_df):
         preds = np.concatenate([preds, np.repeat(preds[-1], len(test_df) - len(preds))])
     return preds[: len(test_df)]
 
 
-def metric_dict(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     return {
         "mae": float(mean_absolute_error(y_true, y_pred)),
         "rmse": float(math.sqrt(mean_squared_error(y_true, y_pred))),
@@ -175,90 +178,117 @@ def metric_dict(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     }
 
 
-def evaluate_series(series_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    data = series_df.sort_values("date").reset_index(drop=True)
-    if len(data) < 20:
-        return pd.DataFrame(), pd.DataFrame()
-    horizon = min(SAMPLING_CONFIG.forecast_horizon_weeks, max(2, len(data) // 5))
-    splitter = TimeSeriesSplit(n_splits=min(3, max(2, len(data) // horizon - 1)))
-    rows = []
-    model_fns: Dict[str, Callable] = {
-        "seasonal_naive": lambda tr, te: seasonal_naive(tr["weekly_demand"], len(te)),
-        "moving_average": lambda tr, te: moving_average(tr["weekly_demand"], len(te)),
-        "sarima": lambda tr, te: sarima_forecast(tr["weekly_demand"], len(te)),
+def _model_registry() -> dict[str, Callable]:
+    return {
+        "seasonal_naive": lambda train, test: seasonal_naive(train["weekly_demand"], len(test)),
+        "moving_average": lambda train, test: moving_average(train["weekly_demand"], len(test)),
+        "sarima": lambda train, test: sarima_forecast(train["weekly_demand"], len(test)),
         "prophet_optional": prophet_forecast,
         "xgboost_or_lgbm_or_rf": ml_forecast,
     }
 
-    for fold, (train_idx, test_idx) in enumerate(splitter.split(data), start=1):
-        train_df = data.iloc[train_idx].copy()
-        test_df = data.iloc[test_idx].copy()
-        for model_name, model_fn in model_fns.items():
+
+def _cross_validate_models(series: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    models = _model_registry()
+    splitter = TimeSeriesSplit(n_splits=min(3, max(2, len(series) // horizon - 1)))
+    rows = []
+    series_id = series["series_id"].iloc[0]
+    series_level = series["series_level"].iloc[0]
+    state_id = series["state_id"].iloc[0]
+    store_id = series["store_id"].iloc[0]
+
+    for fold, (train_idx, test_idx) in enumerate(splitter.split(series), start=1):
+        train = series.iloc[train_idx].copy()
+        test = series.iloc[test_idx].copy()
+        for model_name, model_fn in models.items():
             try:
-                preds = np.asarray(model_fn(train_df, test_df), dtype=float)
-                metrics = metric_dict(test_df["weekly_demand"].to_numpy(dtype=float), preds)
+                preds = np.asarray(model_fn(train, test), dtype=float)
                 rows.append(
                     {
-                        "series_id": data["series_id"].iloc[0],
-                        "series_level": data["series_level"].iloc[0],
-                        "state_id": data["state_id"].iloc[0],
-                        "store_id": data["store_id"].iloc[0],
+                        "series_id": series_id,
+                        "series_level": series_level,
+                        "state_id": state_id,
+                        "store_id": store_id,
                         "target": "weekly_demand",
                         "model_name": model_name,
                         "fold": fold,
-                        **metrics,
+                        **calculate_metrics(test["weekly_demand"].to_numpy(dtype=float), preds),
                     }
                 )
             except Exception as exc:
-                LOGGER.warning("Model %s failed for %s: %s", model_name, data["series_id"].iloc[0], exc)
+                LOGGER.warning("Model %s failed for %s: %s", model_name, series_id, exc)
 
-    results = pd.DataFrame(rows)
-    if results.empty:
-        return pd.DataFrame(), pd.DataFrame()
+    return pd.DataFrame(rows)
 
-    summary = (
-        results.groupby(["series_id", "series_level", "state_id", "store_id", "target", "model_name"], as_index=False)[
+
+def _summarize_results(cv_results: pd.DataFrame) -> pd.DataFrame:
+    return (
+        cv_results.groupby(["series_id", "series_level", "state_id", "store_id", "target", "model_name"], as_index=False)[
             ["mae", "rmse", "mape", "wape"]
         ]
         .mean()
         .sort_values(["series_id", "wape", "rmse"])
     )
 
-    best_model = summary.groupby("series_id", as_index=False).first()
-    forecast_rows = []
-    final_train = data.iloc[:-horizon].copy()
-    final_test = data.iloc[-horizon:].copy()
-    for _, row in best_model.iterrows():
-        model_name = row["model_name"]
-        preds = model_fns[model_name](final_train, final_test)
-        for idx, (_, test_row) in enumerate(final_test.iterrows()):
-            forecast_rows.append(
-                {
-                    "series_id": row["series_id"],
-                    "series_level": row["series_level"],
-                    "state_id": row["state_id"],
-                    "store_id": row["store_id"],
-                    "cat_id": data["cat_id"].iloc[0] if "cat_id" in data.columns else "",
-                    "date": test_row["date"],
-                    "week_id": test_row["week_id"],
-                    "actual": test_row["weekly_demand"],
-                    "forecast": float(preds[idx]),
-                    "model_name": model_name,
-                }
-            )
-    return summary, pd.DataFrame(forecast_rows)
+
+def _best_model(summary: pd.DataFrame) -> pd.Series:
+    return summary.sort_values(["wape", "rmse"]).iloc[0]
 
 
-def plot_selected_series(forecast_results: pd.DataFrame) -> None:
-    if forecast_results.empty:
+def _forecast_rows(series: pd.DataFrame, test: pd.DataFrame, preds: np.ndarray, model_name: str) -> list[dict[str, object]]:
+    rows = []
+    for pred, (_, actual_row) in zip(preds, test.iterrows()):
+        rows.append(
+            {
+                "series_id": series["series_id"].iloc[0],
+                "series_level": series["series_level"].iloc[0],
+                "state_id": series["state_id"].iloc[0],
+                "store_id": series["store_id"].iloc[0],
+                "cat_id": series["cat_id"].iloc[0] if "cat_id" in series.columns else "",
+                "date": actual_row["date"],
+                "week_id": actual_row["week_id"],
+                "actual": actual_row["weekly_demand"],
+                "forecast": float(pred),
+                "model_name": model_name,
+            }
+        )
+    return rows
+
+
+def _best_model_forecast(series: pd.DataFrame, summary: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    models = _model_registry()
+    train = series.iloc[:-horizon].copy()
+    test = series.iloc[-horizon:].copy()
+    best = _best_model(summary)
+    preds = models[best["model_name"]](train, test)
+    return pd.DataFrame(_forecast_rows(series, test, preds, best["model_name"]))
+
+
+def evaluate_series(series_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    series = series_df.sort_values("date").reset_index(drop=True)
+    if len(series) < 20:
+        return pd.DataFrame(), pd.DataFrame()
+
+    horizon = min(SAMPLING_CONFIG.forecast_horizon_weeks, max(2, len(series) // 5))
+    cv_results = _cross_validate_models(series, horizon)
+    if cv_results.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    summary = _summarize_results(cv_results)
+    return summary, _best_model_forecast(series, summary, horizon)
+
+
+def plot_selected_series(forecasts: pd.DataFrame) -> None:
+    if forecasts.empty:
         return
-    sample_series = forecast_results["series_id"].drop_duplicates().head(4).tolist()
-    plot_df = forecast_results[forecast_results["series_id"].isin(sample_series)].copy()
+
+    series_ids = forecasts["series_id"].drop_duplicates().head(4).tolist()
+    plot_df = forecasts[forecasts["series_id"].isin(series_ids)].copy()
     plt.figure(figsize=(12, 7))
-    for series_id in sample_series:
-        series_frame = plot_df[plot_df["series_id"] == series_id]
-        plt.plot(series_frame["date"], series_frame["actual"], linestyle="-", marker="o", label=f"{series_id} actual")
-        plt.plot(series_frame["date"], series_frame["forecast"], linestyle="--", marker="o", label=f"{series_id} forecast")
+    for series_id in series_ids:
+        series = plot_df[plot_df["series_id"] == series_id]
+        plt.plot(series["date"], series["actual"], linestyle="-", marker="o", label=f"{series_id} actual")
+        plt.plot(series["date"], series["forecast"], linestyle="--", marker="o", label=f"{series_id} forecast")
     plt.title("Forecast Plot for Selected Series")
     plt.xlabel("Date")
     plt.ylabel("Weekly Demand")
@@ -269,23 +299,23 @@ def plot_selected_series(forecast_results: pd.DataFrame) -> None:
 
 
 def main() -> None:
-    weekly_df = load_weekly_demand()
-    forecast_base = build_forecast_base(weekly_df)
-    series_summaries = []
-    series_forecasts = []
-    for _, series_df in forecast_base.groupby("series_id"):
-        summary, forecast = evaluate_series(series_df)
+    weekly = load_weekly_demand()
+    base = build_forecast_base(weekly)
+    summaries = []
+    forecasts = []
+    for _, series in base.groupby("series_id"):
+        summary, forecast = evaluate_series(series)
         if not summary.empty:
-            series_summaries.append(summary)
+            summaries.append(summary)
         if not forecast.empty:
-            series_forecasts.append(forecast)
+            forecasts.append(forecast)
 
-    if not series_summaries or not series_forecasts:
+    if not summaries or not forecasts:
         raise ValueError("No forecast results generated. Check whether the weekly dataset has enough history.")
 
-    model_comparison = pd.concat(series_summaries, ignore_index=True)
-    forecast_results = pd.concat(series_forecasts, ignore_index=True)
-    best_by_level = (
+    model_comparison = pd.concat(summaries, ignore_index=True)
+    forecast_results = pd.concat(forecasts, ignore_index=True)
+    accuracy_by_level = (
         model_comparison.groupby(["series_level", "model_name"], as_index=False)[["mae", "rmse", "mape", "wape"]]
         .mean()
         .sort_values(["series_level", "wape"])
@@ -293,11 +323,10 @@ def main() -> None:
 
     write_dataframe(forecast_results, OUTPUT_DIR / "forecast_results.csv")
     write_dataframe(model_comparison, OUTPUT_DIR / "model_comparison.csv")
-    write_dataframe(best_by_level, OUTPUT_DIR / "forecast_accuracy_by_level.csv")
+    write_dataframe(accuracy_by_level, OUTPUT_DIR / "forecast_accuracy_by_level.csv")
     plot_selected_series(forecast_results)
     LOGGER.info("Saved forecasting outputs to %s", OUTPUT_DIR)
 
 
 if __name__ == "__main__":
     main()
-

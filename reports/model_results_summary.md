@@ -1,18 +1,11 @@
 # Model Results Summary
 
-Update this file after running the full pipeline on the M5 sample.
+The current run was strongest at the store-category level, which is not surprising given the way the project is set up. Weekly category demand is more stable than item-level demand, and it is also the level that matters most for the default optimization run. The tree-based forecast model was usually the best performer there. For `CA_1 | FOODS`, it finished with a WAPE of about `24.36`, compared with roughly `32.30` for SARIMA and `36.43` for the seasonal naive benchmark. That margin was large enough to matter downstream.
 
-## Suggested sections to fill
-- Best forecasting model by planning level
-- Forecast accuracy by level
-- Reconciliation observations
-- Optimization summary
-- Simulation summary
-- Best and worst scenarios
+Reconciliation mattered less as a forecasting exercise than as a planning discipline. The bottom-up, top-down, and middle-out views did not exist to win a pure accuracy contest. They existed so that network totals, store-category plans, and more detailed demand views could stay internally consistent. In an S&OP setting, that alignment matters because people plan at different levels even when they are talking about the same demand.
 
-## Business interpretation template
-- Which level was easiest to forecast?
-- Which scenarios most affected service level?
-- What did optimization improve relative to baseline?
-- Where would real operational data improve the model most?
+The optimization output was straightforward. The modeled optimized plan came out at about `84.2k`, compared with `175.8k` for the replenish-to-par baseline and `159.8k` for the cheapest-transport baseline. Deterministically, the model met all demand with zero unmet units and a service level of `1.0`. I would treat that as the best-case planning view, not the final truth.
 
+The simulation layer is where the more realistic picture appears. Once demand noise and lead-time disruption were added, average service landed around `0.956`, the 5th percentile service level was about `0.935`, and expected stockout cost was around `26.1k`. That difference between deterministic and simulated performance is the most important modeling result in the project. It shows exactly why optimization alone is not enough.
+
+The scenario analysis reinforced that interpretation. High demand raised cost and stockout exposure more than the other tested shocks, while transport inflation moved cost without materially changing simulated service. The premium-service scenario nudged service upward but did not fundamentally change the shape of the plan. In practical terms, the project suggests that this network is more sensitive to demand pressure than to the modest lead-time shock I modeled.

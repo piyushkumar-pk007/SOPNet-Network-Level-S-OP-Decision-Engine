@@ -5,7 +5,6 @@ import shutil
 import urllib.request
 import zipfile
 from pathlib import Path
-from typing import Dict
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -21,6 +20,7 @@ REQUIRED_FILES = [
     "sell_prices.csv",
 ]
 PUBLIC_M5_ZIP_URL = "https://zenodo.org/records/12636070/files/m5-forecasting-accuracy.zip?download=1"
+ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 
 
 def _extract_archives() -> None:
@@ -33,13 +33,13 @@ def _extract_archives() -> None:
 def _download_from_public_mirror() -> None:
     target_zip = RAW_M5_DIR / "m5-forecasting-accuracy-public.zip"
     LOGGER.info("Downloading M5 files from public mirror: %s", PUBLIC_M5_ZIP_URL)
-    with urllib.request.urlopen(PUBLIC_M5_ZIP_URL) as response, open(target_zip, "wb") as file_obj:
-        shutil.copyfileobj(response, file_obj)
+    with urllib.request.urlopen(PUBLIC_M5_ZIP_URL) as response, open(target_zip, "wb") as fh:
+        shutil.copyfileobj(response, fh)
     _extract_archives()
 
 
 def _download_from_kaggle() -> None:
-    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+    load_dotenv(dotenv_path=ENV_PATH)
     username = os.getenv("KAGGLE_USERNAME")
     key = os.getenv("KAGGLE_KEY")
     competition = os.getenv("KAGGLE_COMPETITION", "m5-forecasting-accuracy")
@@ -59,8 +59,8 @@ def _download_from_kaggle() -> None:
         api.authenticate()
     except Exception as exc:
         raise RuntimeError(
-            "Kaggle credentials were not loaded successfully. Check that .env exists in the project root and contains "
-            "valid KAGGLE_USERNAME and KAGGLE_KEY values."
+            "Kaggle credentials were not loaded successfully. "
+            "Check that .env exists in the project root and contains valid KAGGLE_USERNAME and KAGGLE_KEY values."
         ) from exc
     LOGGER.info("Downloading Kaggle competition files for %s", competition)
     try:
@@ -78,21 +78,21 @@ def _download_from_kaggle() -> None:
     _extract_archives()
 
 
-def validate_required_files() -> Dict[str, Path]:
-    file_map: Dict[str, Path] = {}
+def validate_required_files() -> dict[str, Path]:
+    files: dict[str, Path] = {}
     for filename in REQUIRED_FILES:
         path = RAW_M5_DIR / filename
         if not path.exists():
             raise FileNotFoundError(
                 f"Missing required file: {filename}. Place M5 files inside data/raw/m5/ or configure Kaggle credentials."
             )
-        file_map[filename] = path
-    return file_map
+        files[filename] = path
+    return files
 
 
 def _safe_read_csv(path: Path, **kwargs) -> pd.DataFrame:
     last_error: Exception | None = None
-    for encoding in ["utf-8", "latin1", "cp1252"]:
+    for encoding in ("utf-8", "latin1", "cp1252"):
         try:
             return pd.read_csv(path, encoding=encoding, **kwargs)
         except UnicodeDecodeError as exc:
@@ -101,15 +101,15 @@ def _safe_read_csv(path: Path, **kwargs) -> pd.DataFrame:
 
 
 def sample_sales_data(sales_df: pd.DataFrame) -> pd.DataFrame:
-    day_columns = [column for column in sales_df.columns if column.startswith("d_")]
-    if len(day_columns) > SAMPLING_CONFIG.last_n_days:
-        keep_day_columns = day_columns[-SAMPLING_CONFIG.last_n_days :]
+    day_cols = [col for col in sales_df.columns if col.startswith("d_")]
+    if len(day_cols) > SAMPLING_CONFIG.last_n_days:
+        keep_day_cols = day_cols[-SAMPLING_CONFIG.last_n_days :]
     else:
-        keep_day_columns = day_columns
+        keep_day_cols = day_cols
 
     store_filtered = sales_df[sales_df["store_id"].isin(SAMPLING_CONFIG.selected_stores)].copy()
     dept_rank = (
-        store_filtered.groupby("dept_id")[keep_day_columns]
+        store_filtered.groupby("dept_id")[keep_day_cols]
         .sum()
         .sum(axis=1)
         .sort_values(ascending=False)
@@ -117,7 +117,7 @@ def sample_sales_data(sales_df: pd.DataFrame) -> pd.DataFrame:
     selected_depts = dept_rank.head(SAMPLING_CONFIG.top_departments).index.tolist()
     dept_filtered = store_filtered[store_filtered["dept_id"].isin(selected_depts)].copy()
 
-    sku_rank = dept_filtered.groupby("item_id")[keep_day_columns].sum().sum(axis=1).sort_values(ascending=False)
+    sku_rank = dept_filtered.groupby("item_id")[keep_day_cols].sum().sum(axis=1).sort_values(ascending=False)
     selected_skus = sku_rank.head(SAMPLING_CONFIG.max_skus).index.tolist()
     sampled = dept_filtered[dept_filtered["item_id"].isin(selected_skus)].copy()
 
@@ -129,7 +129,7 @@ def sample_sales_data(sales_df: pd.DataFrame) -> pd.DataFrame:
         "store_id",
         "state_id",
     ]
-    return sampled[base_columns + keep_day_columns]
+    return sampled[base_columns + keep_day_cols]
 
 
 def clean_calendar_data(calendar_df: pd.DataFrame) -> pd.DataFrame:
@@ -153,10 +153,10 @@ def main() -> None:
     if not all((RAW_M5_DIR / filename).exists() for filename in REQUIRED_FILES):
         _download_from_kaggle()
 
-    file_map = validate_required_files()
-    sales_df = _safe_read_csv(file_map["sales_train_validation.csv"], low_memory=False)
-    calendar_df = _safe_read_csv(file_map["calendar.csv"], low_memory=False)
-    prices_df = _safe_read_csv(file_map["sell_prices.csv"], low_memory=False)
+    files = validate_required_files()
+    sales_df = _safe_read_csv(files["sales_train_validation.csv"], low_memory=False)
+    calendar_df = _safe_read_csv(files["calendar.csv"], low_memory=False)
+    prices_df = _safe_read_csv(files["sell_prices.csv"], low_memory=False)
 
     sales_sample = sample_sales_data(sales_df)
     calendar_clean = clean_calendar_data(calendar_df)
